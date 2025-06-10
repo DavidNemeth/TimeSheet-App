@@ -1,0 +1,35 @@
+# Use ASP.NET image as a base image
+FROM mcr.microsoft.com/dotnet/aspnet:8.0 AS base
+
+# BUILD stage
+FROM mcr.microsoft.com/dotnet/sdk:8.0 AS build
+
+   
+
+# Use NuGet Feed
+RUN curl -L https://raw.githubusercontent.com/Microsoft/artifacts-credprovider/master/helpers/installcredprovider.sh  | sh
+# create your own personal access token, DevOps -> Settings -> PAT -> new Token -> choose rights: Packaging (read)
+ARG NUGET_FEED_PAT
+ENV VSS_NUGET_EXTERNAL_FEED_ENDPOINTS="{\"endpointCredentials\": [{\"endpoint\":\"https://pkgs.dev.azure.com/ContainerboardIT/OperationsPortal/_packaging/SharedLib/nuget/v3/index.json\", \"password\":\"$NUGET_FEED_PAT\"}]}"
+
+COPY ["nuget.config", "/app/"]
+
+# Copy Project file
+COPY ["TimeSheet.Web.csproj",  "/app/"]
+WORKDIR /app
+RUN dotnet restore "TimeSheet.Web.csproj"
+
+COPY . .
+
+# Copy and build
+RUN dotnet publish "TimeSheet.Web.csproj" -c Release -o /app/publish
+
+# Use the base image and copy the published app into it, doesnt include node, since base does not 
+FROM base AS runtime
+WORKDIR /app
+COPY --from=build /app/publish .
+
+EXPOSE 8443
+ENTRYPOINT ["dotnet", "TimeSheet.Web.dll"]
+
+# local dev: docker image 

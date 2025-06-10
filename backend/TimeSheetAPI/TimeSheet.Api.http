@@ -1,0 +1,6 @@
+@TimeSheet.Api_HostAddress = https://localhost:7246
+
+GET {{TimeSheet.Api_HostAddress}}/api/timesheetentries/
+Accept: application/json
+
+###

@@ -1,0 +1,811 @@
+﻿@page "/"
+@using System.Globalization
+@using System.Text.Json
+@using SharedLib.Models
+@using TimeSheet.Web.Enums
+@using System.Text
+@using TimeSheet.Web.Helpers
+@using SharedLib.Constants
+@using SharedLib.Components.Grid
+@inject ITimesheetService TimesheetService
+@inject IDialogService DialogService
+@inject IToastService ToastService
+@inject IConfiguration Configuration
+@inject INotificationService NotificationService
+@inject IUserHttpService UserService
+@inject IEntityHistoryHttpService HistoryService
+<FluentDesignTheme Mode="DesignThemeModes.Light" OfficeColor="OfficeColor.Booking" />
+
+@if (string.IsNullOrEmpty(AppUser.RoleId))
+{
+    <FluentMessageBar AllowDismiss="false" Intent="MessageIntent.Warning">
+        @L["You do not have any Roles assigned, please contact an administrator to set your role."]
+    </FluentMessageBar>
+    return;
+}
+
+@if (AppUser.Permissions is null || !AppUser.Permissions.Any() && !AppUser.IsAdmin)
+{
+    <FluentMessageBar AllowDismiss="false" Intent="MessageIntent.Warning">
+        You are not authorized to view this content. Please contact your administrator if you believe this is an error.
+    </FluentMessageBar>
+    return;
+}
+
+<FluentHeader>@L["Timesheets"]</FluentHeader>
+
+<FluentTabs Size="TabSize.Large" Style="width: 100%;">
+    <FluentTab Label=@L["Active"] Icon="@(new Icons.Regular.Size24.TextArrowDownRightColumn())">
+        <div class="actions-bar">
+            <div class="action-buttons">
+                @if (AppUser.Permissions.Any(p => p.Name == ClaimsDefinition.TimeSheet.FillAndEditForm))
+                {
+                    <FluentButton IconStart="@(new Icons.Regular.Size16.Add())" Appearance="Appearance.Accent" OnClick="OpenCreateNew">
+                        @L["Add New"]
+                    </FluentButton>
+                }
+
+                @if (AppUser.Permissions.Any(p => p.Name == ClaimsDefinition.TimeSheet.ExportData))
+                {
+                    <FluentButton IconStart="@(new Icons.Regular.Size16.ArrowDownload())"
+                    Appearance="Appearance.Neutral"
+                    OnClick="ExportCsvOvertime"
+                    Disabled="@(!CanExportOvertime)">
+                        @L["Overtime"]
+                    </FluentButton>
+                    <FluentButton IconStart="@(new Icons.Regular.Size16.ArrowDownload())"
+                    Appearance="Appearance.Neutral"
+                    OnClick="ExportCsvDirtbonus"
+                    Disabled="@(!CanExportDirtbonus)">
+                        @L["Dirtbonus"]
+                    </FluentButton>
+                }
+            </div>
+            <FluentDatePicker AriaLabel="Select Month" Value="_selectedMonth" View="CalendarViews.Months" ValueChanged="OnMonthChanged" DisabledDateFunc="IsMonthDisabled" />
+        </div>
+        <GenericDataGrid TModel="TimesheetEntryDto"
+        Style="max-height:calc(100dvh - 292px)"
+        Items="@_filteredTimesheetEntries"
+        ShowHeader="false"
+        PageSize="50"
+                         GridTemplateColumns="@GenerateGridTemplateColumns(ColumnType.Action, ColumnType.EmployeeId, ColumnType.CreatedDate, ColumnType.Date, ColumnType.Username, ColumnType.OvertimeString, ColumnType.OvertimeDescription, ColumnType.DirtbonusString, ColumnType.DirtbonusDescription, ColumnType.Status, ColumnType.ApprovedRejectedBy)">
+            <ColumnDefinitions>
+                <TemplateColumn TGridItem="TimesheetEntryDto" Title="@L["Actions"]" Align="@Align.End">
+                    @if (_canArchive)
+                    {
+                        <FluentButton Style="--accent-fill-rest:var(--error)" IconEnd="@(new Icons.Regular.Size16.Archive())" OnClick="@(async () => await Archive(context))" />
+                    }
+                    <FluentButton Style="--accent-fill-rest:var(--warning)" IconEnd="@(new Icons.Regular.Size16.History())" OnClick="@(async () => await OpenHistory(context.Id))" />
+                    @if (AppUser.Permissions.Any(p => p.Name == ClaimsDefinition.TimeSheet.FillAndEditForm || p.Name == ClaimsDefinition.TimeSheet.ProgressForm))
+                    {
+                        <FluentButton IconEnd="@(new Icons.Regular.Size16.Edit())" OnClick="@(async () => await OpenEdit(context.Id))" />
+                    }
+                </TemplateColumn>
+                <PropertyColumn TGridItem="TimesheetEntryDto" TProp="string" Title="@L["Emp-ID"]" Property="@(u => u!.EmployeeId)" Sortable="true">
+                    <ColumnOptions>
+                        <div class="search-box">
+                            <FluentSearch Autofocus=true @bind-Value=_employeeIdFilter @oninput="HandleFilter" Placeholder="@(L["Emp-ID"] + "...")" />
+                        </div>
+                    </ColumnOptions>
+                </PropertyColumn>
+                <PropertyColumn TGridItem="TimesheetEntryDto" TProp="DateTime" Title="@L["Created on"]" Property="@(c => c!.CreatedDate)" Format="ddd, dd.MM.yyyy" Sortable="true">
+                    <ColumnOptions>
+                        <div class="search-box">
+                            <FluentSearch Autofocus=true @bind-Value=_createdDateFilter @oninput="HandleFilter" Placeholder="@(L["Created on"] + "...")" />
+                        </div>
+                    </ColumnOptions>
+                </PropertyColumn>
+
+                <PropertyColumn TGridItem="TimesheetEntryDto" TProp="DateTime" Title="@L["Date"]" Property="@(c => c!.Date)" Format="ddd, dd.MM.yyyy" Sortable="true" IsDefaultSortColumn="true" InitialSortDirection="SortDirection.Descending">
+                    <ColumnOptions>
+                        <div class="search-box">
+                            <FluentSearch Autofocus=true @bind-Value=_affectedDateFilter @oninput="HandleFilter" Placeholder="@(L["Date"] + "...")" />
+                        </div>
+                    </ColumnOptions>
+                </PropertyColumn>
+
+                <PropertyColumn TGridItem="TimesheetEntryDto" TProp="string" Title="@L["Employee"]" Property="@(c => c!.Username)" Sortable="true">
+                    <ColumnOptions>
+                        <div class="search-box">
+                            <FluentSearch Autofocus=true @bind-Value=_usernameFilter @oninput="HandleFilter" Placeholder="@(L["Employee"] + "...")" />
+                        </div>
+                    </ColumnOptions>
+                </PropertyColumn>
+
+                <PropertyColumn TGridItem="TimesheetEntryDto" TProp="string" Title="@L["OT"]" Property="@(c => c!.OvertimeString)" Sortable="true">
+                    <ColumnOptions>
+                        <div class="search-box">
+                            <FluentSearch Autofocus=true @bind-Value=_overtimeFilter @oninput="HandleFilter" Placeholder="@(L["OT"] + "...")" />
+                        </div>
+                    </ColumnOptions>
+                </PropertyColumn>
+
+                <PropertyColumn TGridItem="TimesheetEntryDto" TProp="string" Title="@L["Description"]" Tooltip="true" Property="@(c => c!.OvertimeDescription)" Sortable="true">
+                    <ColumnOptions>
+                        <div class="search-box">
+                            <FluentSearch Autofocus=true @bind-Value=_overtimeDescriptionFilter @oninput="HandleFilter" Placeholder="@(L["Description"] + "...")" />
+                        </div>
+                    </ColumnOptions>
+                </PropertyColumn>
+
+                <PropertyColumn TGridItem="TimesheetEntryDto" TProp="string" Title="@L["DirtB"]" Property="@(c => c!.DirtbonusString)" Sortable="true">
+                    <ColumnOptions>
+                        <div class="search-box">
+                            <FluentSearch Autofocus=true @bind-Value=_dirtbonusFilter @oninput="HandleFilter" Placeholder="@(L["DirtB"] + "...")" />
+                        </div>
+                    </ColumnOptions>
+                </PropertyColumn>
+
+                <PropertyColumn TGridItem="TimesheetEntryDto" TProp="string" Title="@L["Description"]" Tooltip="true" Property="@(c => c!.DirtbonusDescription)" Sortable="true">
+                    <ColumnOptions>
+                        <div class="search-box">
+                            <FluentSearch Autofocus=true @bind-Value=_dirtbonusDescriptionFilter @oninput="HandleFilter" Placeholder="@(L["Description"] + "...")" />
+                        </div>
+                    </ColumnOptions>
+                </PropertyColumn>
+
+                <TemplateColumn TGridItem="TimesheetEntryDto" Title="@L["Status"]" Sortable="true" SortBy="@_statusSort">
+                    <ChildContent>
+                        @{
+                            string backgroundColor = "defaultColor";
+                            string color = "defaultColor";
+                            string fill = "Appearance.Accent";
+
+                            switch (context.Status)
+                            {
+                                case Status.Approved:
+                                    backgroundColor = "green";
+                                    color = "white";
+                                    fill = "somevalue";
+                                    break;
+                                case Status.Rejected:
+                                    backgroundColor = "red";
+                                    color = "white";
+                                    fill = "somevalue";
+                                    break;
+                                default:
+                                    backgroundColor = "#036ac4";
+                                    color = "white";
+                                    fill = "somevalue";
+                                    break;
+                            }
+                        }
+                        <FluentBadge Fill="@fill" BackgroundColor="@backgroundColor" Color="@color">
+                            @L[context.StatusString]
+                        </FluentBadge>
+                    </ChildContent>
+                    <ColumnOptions>
+                        <div class="search-box">
+                            <FluentSearch @bind-Value=_statusFilter @oninput="HandleFilter" Placeholder="@(L["Status"] + "...")" />
+                        </div>
+                    </ColumnOptions>
+                </TemplateColumn>
+                <PropertyColumn TGridItem="TimesheetEntryDto" TProp="string" Title="@L["Approved/Rejected by"]" Tooltip="true" Property="@(c => c!.ApprovedRejectedBy)" Sortable="true">
+                    <ColumnOptions>
+                        <div class="search-box">
+                            <FluentSearch Autofocus=true @bind-Value=_approvedRejectedByFilter @oninput="HandleFilter" Placeholder="@(L["Approved/Rejected by"] + "...")" />
+                        </div>
+                    </ColumnOptions>
+                </PropertyColumn>
+            </ColumnDefinitions>
+        </GenericDataGrid>
+    </FluentTab>
+    <FluentTab Label=@L["Archived"] Icon="@(new Icons.Regular.Size24.Archive())" Disabled="!_canArchive">
+        <div class="actions-bar">
+            <div class="action-buttons">
+                @if (AppUser.Permissions.Any(p => p.Name == ClaimsDefinition.TimeSheet.FillAndEditForm))
+                {
+                    <FluentButton IconStart="@(new Icons.Regular.Size16.Add())" Appearance="Appearance.Accent" OnClick="OpenCreateNew" Disabled>
+                        @L["Add New"]
+                    </FluentButton>
+                }
+
+                @if (AppUser.Permissions.Any(p => p.Name == ClaimsDefinition.TimeSheet.ExportData))
+                {
+                    <FluentButton IconStart="@(new Icons.Regular.Size16.ArrowDownload())"
+                    Appearance="Appearance.Neutral"
+                    OnClick="ExportCsvOvertime"
+                    Disabled>
+                        @L["Overtime"]
+                    </FluentButton>
+                    <FluentButton IconStart="@(new Icons.Regular.Size16.ArrowDownload())"
+                    Appearance="Appearance.Neutral"
+                    OnClick="ExportCsvDirtbonus"
+                    Disabled>
+                        @L["Dirtbonus"]
+                    </FluentButton>
+                }
+            </div>
+            <FluentDatePicker AriaLabel="Select Month" Value="_selectedMonth" View="CalendarViews.Months" ValueChanged="OnMonthChanged" DisabledDateFunc="IsMonthDisabled" Disabled />
+        </div>
+        <GenericDataGrid TModel="TimesheetEntryDto"
+        Style="max-height:calc(100dvh - 292px)"
+        Items="@_filteredArchivedEntries"
+        ShowHeader="false"
+        PageSize="50"
+                         GridTemplateColumns="@GenerateGridTemplateColumns(ColumnType.Action, ColumnType.EmployeeId, ColumnType.CreatedDate, ColumnType.Date, ColumnType.Username, ColumnType.OvertimeString, ColumnType.OvertimeDescription, ColumnType.DirtbonusString, ColumnType.DirtbonusDescription, ColumnType.Status, ColumnType.ApprovedRejectedBy, ColumnType.ArchivedBy, ColumnType.ArchivedDate)">
+            <ColumnDefinitions>
+                <TemplateColumn TGridItem="TimesheetEntryDto" Title="@L["Actions"]" Align="@Align.End">
+                    <FluentButton Style="--accent-fill-rest:var(--warning)" IconEnd="@(new Icons.Regular.Size16.History())" OnClick="@(async () => await OpenHistory(context.Id))" />
+                    @if (_canArchive)
+                    {
+                        <FluentButton Color="blue" IconEnd="@(new Icons.Regular.Size16.ArchiveArrowBack())" OnClick="@(async () => await UnArchive(context))" />
+                    }
+                </TemplateColumn>
+                <PropertyColumn TGridItem="TimesheetEntryDto" TProp="string" Title="@L["Emp-ID"]" Property="@(u => u!.EmployeeId)" Sortable="true">
+                    <ColumnOptions>
+                        <div class="search-box">
+                            <FluentSearch Autofocus=true @bind-Value=_employeeIdFilter @oninput="HandleFilter" Placeholder="@(L["Emp-ID"] + "...")" />
+                        </div>
+                    </ColumnOptions>
+                </PropertyColumn>
+                <PropertyColumn TGridItem="TimesheetEntryDto" TProp="DateTime" Title="@L["Created on"]" Property="@(c => c!.CreatedDate)" Format="ddd, dd.MM.yyyy" Sortable="true">
+                    <ColumnOptions>
+                        <div class="search-box">
+                            <FluentSearch Autofocus=true @bind-Value=_createdDateFilter @oninput="HandleFilter" Placeholder="@(L["Created on"] + "...")" />
+                        </div>
+                    </ColumnOptions>
+                </PropertyColumn>
+
+                <PropertyColumn TGridItem="TimesheetEntryDto" TProp="DateTime" Title="@L["Date"]" Property="@(c => c!.Date)" Format="ddd, dd.MM.yyyy" Sortable="true" IsDefaultSortColumn="true" InitialSortDirection="SortDirection.Descending">
+                    <ColumnOptions>
+                        <div class="search-box">
+                            <FluentSearch Autofocus=true @bind-Value=_affectedDateFilter @oninput="HandleFilter" Placeholder="@(L["Date"] + "...")" />
+                        </div>
+                    </ColumnOptions>
+                </PropertyColumn>
+
+                <PropertyColumn TGridItem="TimesheetEntryDto" TProp="string" Title="@L["Employee"]" Property="@(c => c!.Username)" Sortable="true">
+                    <ColumnOptions>
+                        <div class="search-box">
+                            <FluentSearch Autofocus=true @bind-Value=_usernameFilter @oninput="HandleFilter" Placeholder="@(L["Employee"] + "...")" />
+                        </div>
+                    </ColumnOptions>
+                </PropertyColumn>
+
+                <PropertyColumn TGridItem="TimesheetEntryDto" TProp="string" Title="@L["OT"]" Property="@(c => c!.OvertimeString)" Sortable="true">
+                    <ColumnOptions>
+                        <div class="search-box">
+                            <FluentSearch Autofocus=true @bind-Value=_overtimeFilter @oninput="HandleFilter" Placeholder="@(L["OT"] + "...")" />
+                        </div>
+                    </ColumnOptions>
+                </PropertyColumn>
+
+                <PropertyColumn TGridItem="TimesheetEntryDto" TProp="string" Title="@L["Description"]" Tooltip="true" Property="@(c => c!.OvertimeDescription)" Sortable="true">
+                    <ColumnOptions>
+                        <div class="search-box">
+                            <FluentSearch Autofocus=true @bind-Value=_overtimeDescriptionFilter @oninput="HandleFilter" Placeholder="@(L["Description"] + "...")" />
+                        </div>
+                    </ColumnOptions>
+                </PropertyColumn>
+
+                <PropertyColumn TGridItem="TimesheetEntryDto" TProp="string" Title="@L["DirtB"]" Property="@(c => c!.DirtbonusString)" Sortable="true">
+                    <ColumnOptions>
+                        <div class="search-box">
+                            <FluentSearch Autofocus=true @bind-Value=_dirtbonusFilter @oninput="HandleFilter" Placeholder="@(L["DirtB"] + "...")" />
+                        </div>
+                    </ColumnOptions>
+                </PropertyColumn>
+
+                <PropertyColumn TGridItem="TimesheetEntryDto" TProp="string" Title="@L["Description"]" Tooltip="true" Property="@(c => c!.DirtbonusDescription)" Sortable="true">
+                    <ColumnOptions>
+                        <div class="search-box">
+                            <FluentSearch Autofocus=true @bind-Value=_dirtbonusDescriptionFilter @oninput="HandleFilter" Placeholder="@(L["Description"] + "...")" />
+                        </div>
+                    </ColumnOptions>
+                </PropertyColumn>
+
+                <TemplateColumn TGridItem="TimesheetEntryDto" Title="@L["Status"]" Sortable="true" SortBy="@_statusSort">
+                    <ChildContent>
+                        @{
+                            string backgroundColor = "defaultColor";
+                            string color = "defaultColor";
+                            string fill = "Appearance.Accent";
+
+                            switch (context.Status)
+                            {
+                                case Status.Approved:
+                                    backgroundColor = "green";
+                                    color = "white";
+                                    fill = "somevalue";
+                                    break;
+                                case Status.Rejected:
+                                    backgroundColor = "red";
+                                    color = "white";
+                                    fill = "somevalue";
+                                    break;
+                                default:
+                                    backgroundColor = "#036ac4";
+                                    color = "white";
+                                    fill = "somevalue";
+                                    break;
+                            }
+                        }
+                        <FluentBadge Fill="@fill" BackgroundColor="@backgroundColor" Color="@color">
+                            @L[context.StatusString]
+                        </FluentBadge>
+                    </ChildContent>
+                    <ColumnOptions>
+                        <div class="search-box">
+                            <FluentSearch @bind-Value=_statusFilter @oninput="HandleFilter" Placeholder="@(L["Status"] + "...")" />
+                        </div>
+                    </ColumnOptions>
+                </TemplateColumn>
+                <PropertyColumn TGridItem="TimesheetEntryDto" TProp="string" Title="@L["Approved/Rejected by"]" Tooltip="true" Property="@(c => c!.ApprovedRejectedBy)" Sortable="true">
+                    <ColumnOptions>
+                        <div class="search-box">
+                            <FluentSearch Autofocus=true @bind-Value=_approvedRejectedByFilter @oninput="HandleFilter" Placeholder="@(L["Approved/Rejected by"] + "...")" />
+                        </div>
+                    </ColumnOptions>
+                </PropertyColumn>
+
+                <PropertyColumn TGridItem="TimesheetEntryDto" TProp="string" Title="@L["Archived by"]" Tooltip="true" Property="@(c => c!.ModifiedBy)" Sortable="true">
+                    <ColumnOptions>
+                        <div class="search-box">
+                            <FluentSearch Autofocus=true @bind-Value=_archivedByFilter @oninput="HandleFilter" Placeholder="@(L["Archived by"] + "...")" />
+                        </div>
+                    </ColumnOptions>
+                </PropertyColumn>
+
+                <PropertyColumn TGridItem="TimesheetEntryDto" TProp="DateTime?" Title="@L["Archived Date"]" Format="ddd, dd.MM.yyyy" Tooltip="true" Property="@(c => c!.ModifiedDate)" Sortable="true">
+                    <ColumnOptions>
+                        <div class="search-box">
+                            <FluentSearch Autofocus=true @bind-Value=_archivedDateFilter @oninput="HandleFilter" Placeholder="@(L["Archived Date"] + "...")" />
+                        </div>
+                    </ColumnOptions>
+                </PropertyColumn>
+            </ColumnDefinitions>
+        </GenericDataGrid>
+    </FluentTab>
+</FluentTabs>
+
+@code {
+    [CascadingParameter]
+    public UserViewModel AppUser { get; set; }
+    private List<TimesheetEntryDto> _timesheetEntries;
+    private List<TimesheetEntryDto> _filteredTimesheetEntries => ApplyFilters(_timesheetEntries);
+    private List<TimesheetEntryDto> _archivedEntries;
+    private List<TimesheetEntryDto> _filteredArchivedEntries => ApplyFilters(_archivedEntries);
+    private bool Disabled { get; set; }
+    private DateTime? _selectedMonth = DateTime.Today;
+    private string _employeeIdFilter = string.Empty;
+    private string _createdDateFilter = string.Empty;
+    private string _affectedDateFilter = string.Empty;
+    private string _usernameFilter = string.Empty;
+    private string _overtimeDescriptionFilter = string.Empty;
+    private string _dirtbonusDescriptionFilter = string.Empty;
+    private string _overtimeFilter = string.Empty;
+    private string _dirtbonusFilter = string.Empty;
+    private string _statusFilter = string.Empty;
+    private string _approvedRejectedByFilter = string.Empty;
+    private string _archivedByFilter = string.Empty;
+    private string _archivedDateFilter = string.Empty;
+    private bool CanExportOvertime { get; set; } = false;
+    private bool CanExportDirtbonus { get; set; } = false;
+    private bool _canArchive { get; set; } = false;
+
+    readonly GridSort<TimesheetEntryDto> _statusSort = GridSort<TimesheetEntryDto>
+        .ByDescending(x => x.Status);
+
+    protected override async Task OnInitializedAsync()
+    {
+        try
+        {
+            _canArchive = AppUser is not null && (AppUser.IsTeamHead || AppUser.Permissions.Any(p => p.Name == ClaimsDefinition.TimeSheet.Archive));
+            await LoadTimesheetEntries();
+
+            if (_timesheetEntries == null || !_timesheetEntries.Any())
+            {
+                DemoLogger.WriteLine("No timesheet entries found.");
+            }
+            else
+            {
+                DemoLogger.WriteLine("Timesheets loaded.");
+            }
+        }
+        catch (Exception ex)
+        {
+            DemoLogger.WriteLine($"Failed to load timesheets: {ex.Message}");
+            ToastService.ShowError(L["Failed to load timesheets. Please try refreshing the page."]);
+        }
+        string env = Configuration["AppSettings:ENV"];
+        var apiBaseUrl = Configuration["ApiBaseUrl"];
+        DemoLogger.WriteLine($"App settings env: {env}");
+        DemoLogger.WriteLine($"Api Base URL: {apiBaseUrl}");
+    }
+
+    private async Task OnMonthChanged(DateTime? date)
+    {
+        _selectedMonth = date ?? DateTime.Today;
+        await LoadTimesheetEntries();
+    }
+
+    private async Task LoadTimesheetEntries()
+    {
+        if (AppUser.Permissions is null || !AppUser.Permissions.Any() && !AppUser.IsAdmin)
+        {
+            return;
+        }
+
+        var startDate = new DateTime(_selectedMonth.Value.Year, _selectedMonth.Value.Month, 1);
+        var endDate = startDate.AddMonths(1).AddDays(-1);
+
+        if (AppUser.IsTeamHead && !string.IsNullOrEmpty(AppUser.RoleId))
+        {
+            _timesheetEntries = await TimesheetService.GetTimesheetEntriesAsync(startDate, endDate, AppUser.Id, forRole: true);
+        }
+        else if (AppUser.Permissions.Any(p => p.Name == ClaimsDefinition.TimeSheet.ExportData || p.Name == ClaimsDefinition.TimeSheet.ProgressForm))
+        {
+            _timesheetEntries = await TimesheetService.GetAllTimesheetEntriesAsync(startDate, endDate);
+        }
+        else if (AppUser.Permissions.Any(p => p.Name == ClaimsDefinition.TimeSheet.FillAndEditForm))
+        {
+            _timesheetEntries = await TimesheetService.GetTimesheetEntriesAsync(startDate, endDate, AppUser.Id);
+        }
+        else
+        {
+            _timesheetEntries = [];
+        }
+
+        if (_canArchive)
+        {
+            _archivedEntries = await TimesheetService.GetArchivedEntriesAsync();
+        }
+
+        UpdateExportAvailability();
+    }
+
+    private async Task OpenCreateNew()
+    {
+        Disabled = true;
+        var newTimesheet = new TimesheetEntryDto
+            {
+                Username = AppUser.DisplayName,
+                UserId = AppUser.Id,
+                EmployeeId = AppUser.EmployeeId,
+                Machine = AppUser.DefaultPaperMachine ?? "PM3"
+            };
+
+        var dialog = await DialogService.ShowDialogAsync<TimesheetForm>(newTimesheet, new DialogParameters()
+            {
+                Title = L["New TimeSheet"],
+                OnDialogResult = DialogService.CreateDialogCallback(this, OnDialogCallback),
+                PreventDismissOnOverlayClick = false,
+                ShowDismiss = true,
+                TrapFocus = true,
+                PreventScroll = true
+            });
+        Disabled = false;
+    }
+
+    private async Task OpenEdit(int id)
+    {
+        Disabled = true;
+        var timeSheet = await TimesheetService.GetTimesheetEntryAsync(id);
+        var dialog = await DialogService.ShowDialogAsync<TimesheetForm>(timeSheet, new DialogParameters()
+            {
+                Title = L["Edit TimeSheet"],
+                OnDialogResult = DialogService.CreateDialogCallback(this, OnDialogCallback),
+                PreventDismissOnOverlayClick = false,
+                ShowDismiss = true,
+                TrapFocus = true,
+                PreventScroll = true
+            });
+        Disabled = false;
+    }
+
+    private async Task OpenHistory(int id)
+    {
+        Disabled = true;
+        try
+        {
+            var histories = await HistoryService.GetHistoriesForEntity(EntityHistoryType.TimeSheet, id.ToString());
+            var dialog = await DialogService.ShowDialogAsync<TimesheetHistoryModal>(histories, new DialogParameters()
+            {
+                Title = L["History"],
+                PreventDismissOnOverlayClick = false,
+                ShowDismiss = true,
+                TrapFocus = true,
+                PreventScroll = true
+            });
+        } 
+        catch
+        {
+            ToastService.ShowError(L["Cannot load history. Try again later."]);
+        }
+        Disabled = false;
+    }
+
+    private async Task Archive(TimesheetEntryDto model)
+    {
+        Disabled = true;
+        await TimesheetService.ArchiveEntryAsync(model.Id, AppUser.DisplayName);
+        ToastService.ShowSuccess(L["Timesheet entry archived successfully."]);
+        
+        // history
+        var history = new EntityHistory
+            {
+                Action = EntityHistoryAction.Archive,
+                Date = DateTime.UtcNow,
+                Type = EntityHistoryType.TimeSheet,
+                RecordId = model.Id.ToString(),
+                UserId = AppUser.Id,
+                State = JsonSerializer.Serialize(model)
+            };
+
+        await HistoryService.Add(history);
+        await LoadTimesheetEntries();
+        Disabled = false;
+    }
+
+    private async Task UnArchive(TimesheetEntryDto model)
+    {
+        Disabled = true;
+        await TimesheetService.UnArchiveEntryAsync(model.Id, AppUser.DisplayName);
+        ToastService.ShowSuccess(L["Timesheet entry unarchived successfully."]);
+
+        // history
+        var history = new EntityHistory
+            {
+            Action = EntityHistoryAction.Activate,
+            Date = DateTime.UtcNow,
+            Type = EntityHistoryType.TimeSheet,
+            RecordId = model.Id.ToString(),
+            UserId = AppUser.Id,
+            State = JsonSerializer.Serialize(model)
+        };
+
+        await HistoryService.Add(history);
+        await LoadTimesheetEntries();
+        Disabled = false;
+    }
+
+    private async Task OnDialogCallback(DialogResult result)
+    {
+        if (result.Cancelled)
+        {
+            DemoLogger.WriteLine("Timesheet creation dialogue cancelled.");
+        }
+        else if (result.Data is TimesheetEntryDto model)
+        {
+            try
+            {
+                if (model.Id > 0)
+                { // Update Existing
+                    if (model is { Status: Enums.Status.Approved, OldStatus: Enums.Status.New })
+                    { // Approved
+                        var notification = TimesheetNotificationHelper.GenerateNotificationForApproval(model.Id.ToString());
+                        await NotificationService.SendNotificationToUsers(notification, new List<string> { model.UserId });
+                        await NotificationService.DeleteNotificationsByGroup(ApplicationEnum.TimeSheet, NotificationType.TimeSheetRequest, model.Id.ToString());
+                    }
+                    else if (model is { Status: Enums.Status.Rejected, OldStatus: Enums.Status.New })
+                    { // Rejected
+                        var notification = TimesheetNotificationHelper.GenerateNotificationForRejection(model.Id.ToString());
+                        await NotificationService.SendNotificationToUsers(notification, new List<string> { model.UserId });
+                        await NotificationService.DeleteNotificationsByGroup(ApplicationEnum.TimeSheet, NotificationType.TimeSheetRequest, model.Id.ToString());
+                    }
+                    else if (model is { Status: Enums.Status.New, OldStatus: Enums.Status.Rejected })
+                    { // Correction
+                        var notification = TimesheetNotificationHelper.GenerateNotificationForRequest(model.Id.ToString());
+                        var reviewerIds = await UserService.GetUsersWithPermission(ClaimsDefinition.TimeSheet.ProgressForm, AppUser.RoleId);
+                        await NotificationService.SendNotificationToUsers(notification, reviewerIds);
+                    }
+
+                    await TimesheetService.UpdateTimesheetEntryAsync(model);
+                    ToastService.ShowSuccess(L["Timesheet entry updated successfully."]);
+                    var history = new EntityHistory
+                    {
+                        Action = EntityHistoryAction.Update,
+                        Date = DateTime.UtcNow,
+                        Type = EntityHistoryType.TimeSheet,
+                        RecordId = model.Id.ToString(),
+                        UserId = AppUser.Id,
+                        State = JsonSerializer.Serialize(model)
+                    };
+
+                    await HistoryService.Add(history);
+                }
+                else
+                { // Create New
+                    model.Username = AppUser.DisplayName;
+                    model.UserId = AppUser.Id;
+                    model.EmployeeId = AppUser.EmployeeId;
+                    var addedEntry = await TimesheetService.CreateTimesheetEntryAsync(model);
+                    var notification = TimesheetNotificationHelper.GenerateNotificationForRequest(addedEntry.Id.ToString());
+                    var reviewerIds = await UserService.GetUsersWithPermission(ClaimsDefinition.TimeSheet.ProgressForm, AppUser.RoleId);
+                    await NotificationService.SendNotificationToUsers(notification, reviewerIds);
+                    ToastService.ShowSuccess(L["New timesheet entry created successfully."]);
+                    var history = new EntityHistory
+                    {
+                        Action = EntityHistoryAction.Create,
+                        Date = DateTime.UtcNow,
+                        Type = EntityHistoryType.TimeSheet,
+                        RecordId = addedEntry.Id.ToString(),
+                        UserId = AppUser.Id,
+                        State = JsonSerializer.Serialize(addedEntry)
+                    };
+
+                    await HistoryService.Add(history);
+
+                }
+                await LoadTimesheetEntries();
+            }
+            catch (Exception ex)
+            {
+                DemoLogger.WriteLine($"Error saving timesheet entry: {ex.Message}");
+                ToastService.ShowError(L["Error saving timesheet entry."]);
+            }
+        }
+        else
+        {
+            DemoLogger.WriteLine("No timesheet entry returned from dialog.");
+            ToastService.ShowError(L["No valid data returned from the dialog."]);
+        }
+    }
+
+    private bool IsMonthDisabled(DateTime date)
+    {
+        return date > DateTime.Today;
+    }
+
+    private void HandleFilter(ChangeEventArgs args)
+    {
+        StateHasChanged();
+    }
+
+    private List<TimesheetEntryDto> ApplyFilters(IEnumerable<TimesheetEntryDto> query)
+    {
+        if (!string.IsNullOrWhiteSpace(_employeeIdFilter))
+        {
+            query = query.Where(x => $"{x.EmployeeId}".Contains(_employeeIdFilter, StringComparison.CurrentCultureIgnoreCase));
+        }
+        if (!string.IsNullOrWhiteSpace(_createdDateFilter))
+        {
+            query = query.Where(x => $"{x.CreatedDate:ddd, dd.MM.yyyy}".Contains(_createdDateFilter, StringComparison.CurrentCultureIgnoreCase));
+        }
+        if (!string.IsNullOrWhiteSpace(_affectedDateFilter))
+        {
+            query = query.Where(x => $"{x.Date:ddd, dd.MM.yyyy}".Contains(_affectedDateFilter, StringComparison.CurrentCultureIgnoreCase));
+        }
+        if (!string.IsNullOrWhiteSpace(_usernameFilter))
+        {
+            query = query.Where(x => $"{x.Username}".Contains(_usernameFilter, StringComparison.CurrentCultureIgnoreCase));
+        }
+        if (!string.IsNullOrWhiteSpace(_overtimeDescriptionFilter))
+        {
+            query = query.Where(x => $"{x.OvertimeDescription}".Contains(_overtimeDescriptionFilter, StringComparison.CurrentCultureIgnoreCase));
+        }
+        if (!string.IsNullOrWhiteSpace(_dirtbonusDescriptionFilter))
+        {
+            query = query.Where(x => $"{x.DirtbonusDescription}".Contains(_dirtbonusDescriptionFilter, StringComparison.CurrentCultureIgnoreCase));
+        }
+        if (!string.IsNullOrWhiteSpace(_overtimeFilter))
+        {
+            query = query.Where(x => $"{x.Overtime}".Contains(_overtimeFilter, StringComparison.CurrentCultureIgnoreCase));
+        }
+        if (!string.IsNullOrWhiteSpace(_dirtbonusFilter))
+        {
+            query = query.Where(x => $"{x.Dirtbonus}".Contains(_dirtbonusFilter, StringComparison.CurrentCultureIgnoreCase));
+        }
+        if (!string.IsNullOrWhiteSpace(_statusFilter))
+        {
+            query = query.Where(x => $"{L[x.StatusString]}".Contains(_statusFilter, StringComparison.CurrentCultureIgnoreCase));
+        }
+        if (!string.IsNullOrWhiteSpace(_approvedRejectedByFilter))
+        {
+            query = query.Where(x => $"{x.ApprovedRejectedBy}".Contains(_approvedRejectedByFilter, StringComparison.CurrentCultureIgnoreCase));
+        }
+        if (!string.IsNullOrWhiteSpace(_archivedByFilter))
+        {
+            query = query.Where(x => $"{x.ModifiedBy}".Contains(_archivedByFilter, StringComparison.CurrentCultureIgnoreCase));
+        }
+        if (!string.IsNullOrWhiteSpace(_archivedDateFilter))
+        {
+            query = query.Where(x => $"{x.ModifiedDate:ddd, dd.MM.yyyy}".ToString().Contains(_archivedDateFilter, StringComparison.CurrentCultureIgnoreCase));
+        }
+
+        return query?.ToList() ?? [];
+    }
+
+    private async Task ExportCsvOvertime()
+    {
+        var approvedOvertimeEntries = _filteredTimesheetEntries
+            .Where(entry => entry.Overtime > 0 && entry.Status == Status.Approved);
+
+        if (!approvedOvertimeEntries.Any())
+        {
+            ToastService.ShowError(L["No approved overtime entries found."]);
+            return;
+        }
+
+        var data = approvedOvertimeEntries
+            .Select(timeSheetEntry => new Dictionary<string, object>()
+            {
+                { "Firma", 100 },
+                { "Personalnummer", timeSheetEntry.EmployeeId },
+                { "Datum", timeSheetEntry.Date.ToString("dddd, dd.MM.yyyy", CultureInfo.CurrentCulture) },
+                { "EH", timeSheetEntry.OvertimeString },
+                { "Von", $"{timeSheetEntry.OvertimeFrom.Value:HH:mm}" },
+                { "Bis", $"{timeSheetEntry.OvertimeTo.Value:HH:mm}" },
+                { "Renumeration", timeSheetEntry.PayoutOption == "PayNextSalary" ? "Lohn" : "Zeitkonto" },
+                { "Name", timeSheetEntry.Username }
+            }).ToList();
+
+        var fileName = $"overtime_{DateTime.UtcNow:MMyyyy}.csv";
+        var csvString = CsvHelper.WriteDictionaryListToCsv(data);
+        await JSRuntime.SaveAs(fileName, Encoding.ASCII.GetBytes(csvString));
+    }
+
+    private async Task ExportCsvDirtbonus()
+    {
+        var approvedDirtbonusEntries = _filteredTimesheetEntries
+            .Where(entry => entry.Dirtbonus > 0 && entry.Status == Status.Approved);
+
+        if (!approvedDirtbonusEntries.Any())
+        {
+            ToastService.ShowError(L["No approved dirtbonus entries found."]);
+            return;
+        }
+
+        var data = approvedDirtbonusEntries
+            .GroupBy(timesheetEntryDto => timesheetEntryDto.EmployeeId)
+            .Select(timesheetGroup => new Dictionary<string, object>()
+                                                            {
+            { "Firma", 100 },
+            { "Personalnummer", timesheetGroup.Key },
+            { "LOA", 3100 },
+            { "EH", timesheetGroup.Sum(x => x.Dirtbonus) },
+            { "Satz", "" },
+            { "Betrag", "" },
+            { "gueltigvon", "" },
+            { "gueltigbis", "" },
+            { "Kostenstelle", "" },
+            { "Monat", timesheetGroup.First().Date.Month },
+            { "Unterbrechungvon", ""},
+            { "Unterbrechnungbis", ""},
+            { "Vorzeichen", ""},
+            { "LGTafel", ""},
+            { "VerwGrp", ""},
+            { "KVJahre", ""},
+            { "BruttovorgJ", ""},
+            { "Nettocode", ""},
+            { "Jahr", timesheetGroup.First().Date.Year }
+                                                            }).ToList();
+
+        var fileName = $"dirt_bonus_{DateTime.UtcNow:MMyyyy}.csv";
+        var csvString = CsvHelper.WriteDictionaryListToCsv(data);
+        await JSRuntime.SaveAs(fileName, Encoding.ASCII.GetBytes(csvString));
+    }
+
+    private void UpdateExportAvailability()
+    {
+        CanExportOvertime = _filteredTimesheetEntries != null
+                            && _filteredTimesheetEntries.Any(e => e.Overtime > 0 && e.Status == Status.Approved);
+        CanExportDirtbonus = _filteredTimesheetEntries != null
+                            && _filteredTimesheetEntries.Any(e => e.Dirtbonus > 0 && e.Status == Status.Approved);
+    }
+
+    private enum ColumnType
+    {
+        EmployeeId = 120,
+        CreatedDate = 150,
+        Date = 150,
+        Username = 180,
+        OvertimeString = 100,   
+        OvertimeDescription = 200,
+        DirtbonusString = 110,
+        DirtbonusDescription = 200,
+        Status = 105,
+        ApprovedRejectedBy = 225,
+        ArchivedBy = 140,
+        ArchivedDate = 170,
+        Action = 125,
+    }
+
+    private string GenerateGridTemplateColumns(params ColumnType[] columnTypes)
+    {
+        var columns = columnTypes.Select(c => $"{(int)c}px");
+        var test = string.Join(" ", columns);
+        return test;
+    }
+}

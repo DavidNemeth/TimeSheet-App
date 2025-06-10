@@ -1,0 +1,131 @@
+﻿@using Humanizer
+@using SharedLib.Models
+@using System.Text.Json
+@using Enums
+@implements IDialogContentComponent<List<EntityHistory>>
+
+@if (Content is null or {Count: 0} || Content.Count is 1 && Content[0].Action is not EntityHistoryAction.Create)
+{
+    <FluentDialogBody>
+        @L["No recorded history"]
+    </FluentDialogBody>
+    <FluentDialogFooter>
+        <FluentButton Appearance="Appearance.Accent" OnClick="@CloseAsync">
+            @L["Close"]
+        </FluentButton>
+    </FluentDialogFooter>
+    return;
+}
+
+<FluentDialogBody>
+    @foreach(var (history, i) in Content.OrderBy(h => h.Date).Select((h, i) => (h, i))) {
+        @if (history.Action is EntityHistoryAction.Create) {
+            <div class="history-title">@L["Created by"] @history.User.DisplayName <span class="history-date" title="@history.Date.ToLocalTime().ToString("yyyy.MM.dd HH:mm")">@history.Date.ToLocalTime().Humanize()</span></div>
+            continue;
+        }
+
+        @if (history.Action is EntityHistoryAction.Delete) {
+            <div class="history-title">@L["Deleted by"] @history.User.DisplayName <span class="history-date" title="@history.Date.ToLocalTime().ToString("yyyy.MM.dd HH:mm")">@history.Date.ToLocalTime().Humanize()</span></div>
+            continue;
+        }
+
+        @if (history.Action is EntityHistoryAction.Archive) {
+            <div class="history-title">@L["Archived by"] @history.User.DisplayName <span class="history-date" title="@history.Date.ToLocalTime().ToString("yyyy.MM.dd HH:mm")">@history.Date.ToLocalTime().Humanize()</span></div>
+            continue;
+        }
+
+        @if (history.Action is EntityHistoryAction.Activate) {
+            <div class="history-title">@L["Activated by"] @history.User.DisplayName <span class="history-date" title="@history.Date.ToLocalTime().ToString("yyyy.MM.dd HH:mm")">@history.Date.ToLocalTime().Humanize()</span></div>
+            continue;
+        }
+        
+        var changes = GetChanges(history, Content[i - 1]);
+        @if (changes.Count > 0)
+        {
+            <div class="history-title">@L["Updated by"] @history.User.DisplayName <span class="history-date" title="@history.Date.ToLocalTime().ToString("yyyy.MM.dd HH:mm")">@history.Date.ToLocalTime().Humanize()</span></div>
+            <ul class="history-list">
+                @foreach (var change in changes)
+                {
+                    <li class="history-list-item">
+                        @change
+                    </li>
+                }
+            </ul>
+        }
+    }
+</FluentDialogBody>
+<FluentDialogFooter>
+    <FluentButton Appearance="Appearance.Accent" OnClick="@CloseAsync">
+        @L["Close"]
+    </FluentButton>
+</FluentDialogFooter>
+
+@code {
+    [CascadingParameter] FluentDialog Dialog { get; set; }
+    [Parameter] public List<EntityHistory> Content { get; set; } = default!;
+
+    private async Task CloseAsync()
+    {
+        await Dialog.CloseAsync(Content);
+    }
+
+    private List<MarkupString> GetChanges(EntityHistory current, EntityHistory previous)
+    {
+        var currentState = JsonSerializer.Deserialize<TimesheetEntryDto>(current.State);
+        var previousState = JsonSerializer.Deserialize<TimesheetEntryDto>(previous.State);
+        var changes = new List<MarkupString>();
+
+        List<string> excludedProps = [
+            nameof(TimesheetEntryDto.OldStatus), 
+            nameof(TimesheetEntryDto.ModifiedDate), 
+            nameof(TimesheetEntryDto.ModifiedBy), 
+            nameof(TimesheetEntryDto.Archived), 
+            nameof(TimesheetEntryDto.CreatedDate),
+        ];
+
+        var properties = typeof(TimesheetEntryDto)
+            .GetProperties()
+            .Where(prop => prop.CanWrite && prop.CanRead && !excludedProps.Contains(prop.Name))
+            .OrderBy(prop => prop.Name);
+
+        foreach (var prop in properties)
+        {
+            var currentValue = prop.GetValue(currentState);
+            var previousValue = prop.GetValue(previousState);
+
+            // No change
+            if (currentValue == null && previousValue == null || currentValue is not null && currentValue.Equals(previousValue))
+                continue;
+
+            // Custom formatting
+            if (prop.Name is nameof(TimesheetEntryDto.PayoutOption))
+            {
+                currentValue = currentValue is null ? null : L[currentValue.ToString().Humanize()];
+                previousValue = previousValue is null ? null : L[previousValue.ToString().Humanize()];
+            }
+
+            if (prop.Name is nameof(TimesheetEntryDto.Status))
+            {
+                currentValue = L[currentValue.ToString()];
+                previousValue = L[previousValue.ToString()];
+            }
+
+            if (prop.Name is nameof(TimesheetEntryDto.Date))
+            {
+                currentValue = DateTime.Parse(currentValue.ToString()).ToShortDateString();
+                previousValue = DateTime.Parse(previousValue.ToString()).ToShortDateString();
+            }
+
+            if (prop.PropertyType == typeof(TimeOnly?))
+            {
+                currentValue = currentValue is null ? null : TimeOnly.Parse(currentValue.ToString()).ToString("HH:mm");
+                previousValue = previousValue is null ? null : TimeOnly.Parse(previousValue.ToString()).ToString("HH:mm");
+            }
+
+            changes.Add(
+                new MarkupString($"<span class=\"history-list-prop\">{L[prop.Name.Humanize()]}</span>: <span class=\"history-list-value\">\"{previousValue}\"</span> → <span class=\"history-list-value\">\"{currentValue}\"</span>"));
+        }
+
+        return changes;
+    }
+}

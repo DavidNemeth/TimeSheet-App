@@ -1,0 +1,27 @@
+# Use ASP.NET image as a base image
+FROM mcr.microsoft.com/dotnet/aspnet:8.0 AS base
+
+# BUILD stage
+FROM mcr.microsoft.com/dotnet/sdk:8.0 AS build
+
+# Copy Project file
+COPY ["TimeSheet.Api.csproj",  "/app/"]
+WORKDIR /app
+RUN dotnet restore "TimeSheet.Api.csproj"
+
+COPY . .
+
+# Copy and build
+RUN dotnet publish "TimeSheet.Api.csproj" -c Release -o /app/publish
+
+# Use the base image and copy the published app into it, doesnt include node, since base does not 
+FROM base AS runtime
+WORKDIR /app
+COPY --from=build /app/publish .
+
+EXPOSE 8080
+
+ENV ASPNETCORE_URLS=http://+:8080
+ENTRYPOINT ["dotnet", "TimeSheet.Api.dll"]
+
+# local dev: docker image 

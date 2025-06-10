@@ -1,0 +1,297 @@
+﻿@implements IDialogContentComponent<TimesheetEntryDto>
+@using SharedLib.Components.FormComponents
+@using SharedLib.Constants 
+@using TimeSheet.Web.Enums;
+@inject IToastService ToastService
+
+<FluentDesignTheme Mode="DesignThemeModes.Light" OfficeColor="OfficeColor.Booking" />
+
+<FluentDialogBody>
+    @if (_editContext != null)
+    {
+        <EditForm EditContext="@_editContext" OnValidSubmit="@SaveAsync" FormName="timesheet_form" @oninput="_ => _editContext.Validate()" novalidate>
+            <DataAnnotationsValidator />
+            <div style="display: flex; width:100%">
+                <div>
+                    <FluentDatePicker Label="@L["Date"]" ReadOnly="readOnly" Value="@Content.Date" ValueChanged="@(e => OnDateChanged(e.Value))" Required DisabledDateFunc="@IsDateDisabled" />
+                </div>
+                <div>
+                    <FluentTextField Label="@L["User Name"]" ReadOnly Value="@Content.Username" />
+                </div>
+
+            </div>
+            <MachineSelect Disabled="readOnly" @bind-Value="@Content.Machine" />
+            <div style="display: flex; width:100%">
+                <div>
+                    <CustomNumberField TValue="double?" ReadOnly="readOnly" Value="@Content.Overtime" Min="0" Label="@L["Overtime"]" Placeholder="@L["Overtime"]" ValueChanged="UpdateOvertime" />
+                </div>
+                <div>
+                    <FluentTimePicker ReadOnly="readOnly" Value="DateTime.Today.Add(Content.OvertimeFrom?.ToTimeSpan() ?? new())" Label="@L["From"]" @oninput="UpdateOvertimeFrom" />
+                </div>
+                <div>
+                    <FluentTimePicker ReadOnly="readOnly" Value="DateTime.Today.Add(Content.OvertimeTo?.ToTimeSpan() ?? new())" Label="@L["To"]" @oninput="UpdateOvertimeTo" />
+                </div>
+            </div>
+            <FluentValidationMessage For="@(() => Content.Overtime)" />
+            <FluentValidationMessage For="@(() => Content.OvertimeFrom)" />
+            <FluentValidationMessage For="@(() => Content.OvertimeTo)" />
+
+            <CustomDropdown Disabled="readOnly"
+            Optional="true"
+            Items=@payoutOptions
+            OptionText="@(i => i.Text)"
+            OptionValue="@(i => i.Value)"
+            @bind-Value="@Content.PayoutOption"
+            Label="@L["Overtime Payout"]" />
+            <FluentValidationMessage For="@(() => Content.PayoutOption)" />
+
+            <FluentTextArea Immediate @bind-Value="@Content.OvertimeDescription" Label="@L["Description"]" Minlength=5 Maxlength=500 Rows="3" Cols="60" ReadOnly="Content.Overtime is null or 0 || readOnly" />
+            <FluentValidationMessage For="@(() => Content.OvertimeDescription)" />
+
+            <CustomNumberField TValue="double?" Value="@Content.Dirtbonus" ValueChanged="DirtbonusChanged" Label="@L["Dirtbonus"]" Placeholder="@L["Dirtbonus"]" Min="1" Step="0.25" ReadOnly="readOnly" />
+            <FluentValidationMessage For="@(() => Content.Dirtbonus)" />
+
+            <FluentTextArea Immediate @bind-Value="@Content.DirtbonusDescription" Label="@L["Description"]" Minlength=5 Maxlength=500 Rows="3" Cols="60" ReadOnly="Content.Dirtbonus is null or < 1 || readOnly" />
+            <FluentValidationMessage For="@(() => Content.DirtbonusDescription)" />
+
+            @if (editing && Content.Status is Status.New && userCanApproveOrReject || Content.Status is Status.Rejected)
+            {
+                <FluentTextArea Immediate @bind-Value="@Content.RejectionReason" Label="@L["Rejection Reason"]" Minlength=5 Maxlength=500 Rows="3" Cols="60" ReadOnly="!userCanApproveOrReject || Content.OldStatus is Status.Rejected" />
+                <FluentValidationMessage For="@(() => Content.RejectionReason)" />
+            }
+
+            @if (Content.Status is Status.Approved)
+            {
+                <FluentTextField Label="@L["Approved by"]" ReadOnly Value="@Content.ApprovedBy" />
+            }
+
+            @if (Content.Status is Status.Rejected)
+            {
+                <FluentTextField Label="@L["Rejected by"]" ReadOnly Value="@Content.RejectedBy" />
+            }
+        </EditForm>
+    }
+</FluentDialogBody>
+<FluentDialogFooter>
+    @if (editing && Content.OldStatus is Status.New && userCanApproveOrReject)
+    {
+        <FluentButton BackgroundColor="green" Color="white" OnClick="@ApproveAsync">
+            @L["Approve"]
+        </FluentButton>
+        <FluentButton BackgroundColor="red" Color="white" OnClick="@RejectAsync">
+            @L["Reject"]
+        </FluentButton>
+    }
+    @if (!readOnly)
+    {
+        <FluentButton Appearance="Appearance.Accent" OnClick="@UpdateAsync">
+            @L["Save"]
+        </FluentButton>
+    }
+
+</FluentDialogFooter>
+
+@code {
+    [CascadingParameter]
+    public FluentDialog Dialog { get; set; }
+    [CascadingParameter]
+    public UserViewModel appUser { get; set; }
+    [Parameter]
+    public TimesheetEntryDto Content { get; set; } = default!;
+
+    private EditContext _editContext;
+    private List<Option<string>> payoutOptions = new();
+
+    private bool editing = false;
+    private bool userIsOwnerOfTheRequest => appUser.Id == Content.UserId;
+    private bool userCanApproveOrReject => appUser.Permissions.Any(p => p.Name == ClaimsDefinition.TimeSheet.ProgressForm) || appUser.IsTeamHead;
+    private bool userCanEditApproved => appUser.Permissions.Any(p => p.Name == ClaimsDefinition.TimeSheet.EditApprovedForm) || appUser.IsTeamHead;
+    private bool readOnly => Content.OldStatus is Status.Approved && !userCanEditApproved || Content.OldStatus is not Status.Approved && !userIsOwnerOfTheRequest;
+
+    protected override void OnInitialized()
+    {
+        payoutOptions = new()
+        {
+            new Option<string> { Value = "PayNextSalary", Text = L["Pay out with the next salary"] },
+            new Option<string> { Value = "BookTimeAccount", Text = L["Book to my time account"] }
+        };
+    }
+
+    protected override void OnParametersSet()
+    {
+        if (Content != null)
+        {
+            if (Content.Id > 0)
+            {
+                editing = true;
+            }
+            _editContext = new EditContext(Content);
+        }
+    }
+
+    private async Task ApproveAsync()
+    {
+        Content.Status = Status.Approved;
+        Content.ApprovedBy = appUser.DisplayName;
+        Content.RejectedBy = null;
+        await SaveAsync();
+    }
+
+    private async Task RejectAsync()
+    {
+        Content.Status = Status.Rejected;
+        Content.RejectedBy = appUser.DisplayName;
+        Content.ApprovedBy = null;
+        await SaveAsync();
+    }
+
+    private async Task UpdateAsync()
+    {
+        if (Content.Status is not Status.Approved)
+        {
+            Content.Status = Status.New;
+        }
+
+        await SaveAsync();
+    }
+
+    private async Task SaveAsync()
+    {
+        if (!_editContext.Validate())
+        {
+            return;
+        }
+
+        try
+        {
+            if (Content.Dirtbonus is null)
+            {
+                Content.DirtbonusDescription = null;
+            }
+
+            if (Content.Overtime is null)
+            {
+                Content.OvertimeDescription = null;
+            }
+
+            await Dialog.CloseAsync(Content);
+        }
+        catch (Exception ex)
+        {
+            Console.Error.WriteLine($"Error preparing timesheet entry: {ex.Message}");
+            ToastService.ShowError(L["Error preparing timesheet entry."]);
+        }
+    }
+
+    private void UpdateOvertime(double? overtime)
+    {
+        Content.Overtime = overtime;
+
+        if (Content.Overtime is null)
+        {
+            Content.OvertimeFrom = null;
+            Content.OvertimeTo = null;
+            Content.OvertimeDescription = null;
+            _editContext.Validate();
+            return;
+        }
+
+        if ((Content.OvertimeFrom, Content.OvertimeTo) is (null, null))
+        {
+            Content.OvertimeFrom = new TimeOnly();
+        }
+
+        Content.OvertimeFrom ??= Content.OvertimeTo.Value.AddHours(-1 * Content.Overtime.Value);
+        Content.OvertimeTo = Content.OvertimeFrom.Value.AddHours(Content.Overtime.Value);
+        _editContext.Validate();
+    }
+
+    private void UpdateOvertimeFrom(ChangeEventArgs args)
+    {
+        if (!TimeOnly.TryParse(args.Value?.ToString(), out var overtimeFrom))
+        {
+            Content.OvertimeFrom = null;
+            return;
+        }
+
+        Content.OvertimeFrom = overtimeFrom;
+
+        if ((Content.Overtime, Content.OvertimeTo) is (null, null))
+        {
+            Content.Overtime = 1;
+        }
+
+        Content.Overtime ??= Math.Abs((Content.OvertimeTo - Content.OvertimeFrom).Value.TotalHours);
+        Content.OvertimeTo = Content.OvertimeFrom.Value.AddHours(Content.Overtime.Value);
+        _editContext.Validate();
+    }
+
+    private void UpdateOvertimeTo(ChangeEventArgs args)
+    {
+        if (!TimeOnly.TryParse(args.Value?.ToString(), out var overtimeTo))
+        {
+            Content.OvertimeTo = null;
+            return;
+        }
+
+        Content.OvertimeTo = overtimeTo;
+
+        if ((Content.Overtime, Content.OvertimeFrom) is (null, null))
+        {
+            Content.Overtime = 1;
+        }
+
+        Content.OvertimeFrom ??= Content.OvertimeTo.Value.AddHours(-1 * Content.Overtime.Value);
+        Content.Overtime = Math.Abs((Content.OvertimeTo - Content.OvertimeFrom).Value.TotalHours);
+        _editContext.Validate();
+    }
+
+    private void OnDateChanged(DateTime? newValue)
+    {
+        if (newValue is null || IsDateDisabled(newValue.Value))
+        {
+            Content.Date = DateTime.Today;
+            return;
+        }
+
+        Content.Date = newValue.Value;
+    }
+    
+    private bool IsDateDisabled(DateTime date)
+    {
+        var now =  DateTime.Now;
+        var startDate = new DateTime(now.Year, now.Month, 1, 0, 0, 0);
+        var endDate = new DateTime(now.Year, now.Month, DateTime.DaysInMonth(now.Year, now.Month), 23, 59, 59);
+
+        // On the first day of each month before 9 am,
+        // users should be able to pick days from the previous month when submitting a timesheet entry.
+        if (now.Day is 1 && now.Hour < 9)
+        {
+            startDate = startDate.AddMonths(-1);
+        }
+
+        return date < startDate || date > endDate;
+    }
+
+    private void DirtbonusChanged(double? value)
+    {
+        if (value is null)
+        {
+            Content.Dirtbonus = null;
+            Content.DirtbonusDescription = null;
+            _editContext.Validate();
+            return;
+        }
+
+        if (value % 0.25 is 0)
+        {
+            Content.Dirtbonus = value;
+            _editContext.Validate();
+            return;
+        }
+
+        // Dirtbonus must be divisible by quarter hour (0.25h)
+        Content.Dirtbonus = Math.Round(value.Value * 4, MidpointRounding.AwayFromZero) / 4;
+        _editContext.Validate();
+    }
+}
