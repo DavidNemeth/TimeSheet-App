@@ -1,20 +1,18 @@
-# Introduction 
-TODO: Give a short introduction of your project. Let this section explain the objectives or the motivation behind this project. 
+# TimeSheet Web Frontend
 
-# Getting Started
-TODO: Guide users through getting your code up and running on their own system. In this section you can talk about:
-1.	Installation process
-2.	Software dependencies
-3.	Latest releases
-4.	API references
+This is the frontend web application for the TimeSheet Application. It is an ASP.NET Core hosted Blazor application (using .NET 8.0) that provides the user interface for interacting with the timesheet system.
 
-# Build and Test
-TODO: Describe and show how to build your code and run the tests. 
+## Key Features
+*   Allows users to create, view, and manage their timesheet entries.
+*   Provides views for active and archived timesheets.
+*   Enables users with appropriate permissions to approve or reject timesheet entries.
+*   Connects to the `TimeSheetAPI` backend to fetch and store data.
 
-# Contribute
-TODO: Explain how other users and developers can contribute to make your code better. 
+## User Guide
+For instructions on how to use the application, please see the [User Guide](../../USER_GUIDE.md).
 
-If you want to learn more about creating good readme files then refer the following [guidelines](https://docs.microsoft.com/en-us/azure/devops/repos/git/create-a-readme?view=azure-devops). You can also seek inspiration from the below readme files:
-- [ASP.NET Core](https://github.com/aspnet/Home)
-- [Visual Studio Code](https://github.com/Microsoft/vscode)
-- [Chakra Core](https://github.com/Microsoft/ChakraCore)
+## Technical Details
+For detailed technical information about the frontend, including setup, architecture, and components, please refer to the main [Technical Documentation](../../TECHNICAL_DOCUMENTATION.md#frontend---timesheetweb) for the project.
+
+## Main Project Documentation
+For an overview of the entire TimeSheet Application, see the [main README](../../README.md).
